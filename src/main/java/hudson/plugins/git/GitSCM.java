@@ -27,6 +27,7 @@ import hudson.plugins.git.extensions.impl.AuthorInChangelog;
 import hudson.plugins.git.extensions.impl.BuildChooserSetting;
 import hudson.plugins.git.extensions.impl.BuildSingleRevisionOnly;
 import hudson.plugins.git.extensions.impl.ChangelogToBranch;
+import hudson.plugins.git.extensions.impl.ChangelogFromLastCommit;
 import hudson.plugins.git.extensions.impl.CloneOption;
 import hudson.plugins.git.extensions.impl.PathRestriction;
 import hudson.plugins.git.extensions.impl.LocalBranch;
@@ -1478,32 +1479,41 @@ public class GitSCM extends GitSCMBackwardCompatibility {
     private void computeChangeLog(GitClient git, Revision revToBuild, TaskListener listener, BuildData previousBuildData, FilePath changelogFile, BuildChooserContext context) throws IOException, InterruptedException {
         boolean executed = false;
         ChangelogCommand changelog = git.changelog();
-        changelog.includes(revToBuild.getSha1());
+        changelog.includes(revToBuild.getSha1());        
         try (Writer out = new OutputStreamWriter(changelogFile.write(), StandardCharsets.UTF_8)) {
-            boolean exclusion = false;
-            ChangelogToBranch changelogToBranch = getExtensions().get(ChangelogToBranch.class);
-            if (changelogToBranch != null) {
-                listener.getLogger().println("Using 'Changelog to branch' strategy.");
-                changelog.excludes(changelogToBranch.getOptions().getRef());
-                exclusion = true;
+
+            ChangelogFromLastCommit changelogFromLastCommit = getExtensions().get(ChangelogFromLastCommit.class);
+            if (changelogFromLastCommit != null) {
+                listener.getLogger().println("Using 'Changelog from last commit' strategy.");
+                changelog.to(out).max(1).execute();
+                executed = true;
             } else {
-                for (Branch b : revToBuild.getBranches()) {
-                    Build lastRevWas = getBuildChooser().prevBuildForChangelog(b.getName(), previousBuildData, git, context);
-                    if (lastRevWas != null && lastRevWas.revision != null && git.isCommitInRepo(lastRevWas.getSHA1())) {
-                        changelog.excludes(lastRevWas.getSHA1());
-                        exclusion = true;
+                boolean exclusion = false;
+                ChangelogToBranch changelogToBranch = getExtensions().get(ChangelogToBranch.class);
+                if (changelogToBranch != null) {
+                    listener.getLogger().println("Using 'Changelog to branch' strategy.");
+                    changelog.excludes(changelogToBranch.getOptions().getRef());
+                    exclusion = true;
+                } else {
+                    for (Branch b : revToBuild.getBranches()) {
+                        Build lastRevWas = getBuildChooser().prevBuildForChangelog(b.getName(), previousBuildData, git, context);
+                        if (lastRevWas != null && lastRevWas.revision != null && git.isCommitInRepo(lastRevWas.getSHA1())) {
+                            changelog.excludes(lastRevWas.getSHA1());
+                            exclusion = true;
+                        }
                     }
+                }
+
+                if (!exclusion) {
+                    // this is the first time we are building this branch, so there's no base line to compare against.
+                    // if we force the changelog, it'll contain all the changes in the repo, which is not what we want.
+                    listener.getLogger().println("First time build. Skipping changelog.");
+                } else {
+                    changelog.to(out).max(MAX_CHANGELOG).execute();
+                    executed = true;
                 }
             }
 
-            if (!exclusion) {
-                // this is the first time we are building this branch, so there's no base line to compare against.
-                // if we force the changelog, it'll contain all the changes in the repo, which is not what we want.
-                listener.getLogger().println("First time build. Skipping changelog.");
-            } else {
-                changelog.to(out).max(MAX_CHANGELOG).execute();
-                executed = true;
-            }
         } catch (GitException ge) {
             ge.printStackTrace(listener.error("Unable to retrieve changeset"));
         } finally {

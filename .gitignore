@@ -22,3 +22,4 @@ Session.vim
 
 # Mac OSX
 .DS_Store
+.vscode/settings.json
